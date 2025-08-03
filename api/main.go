@@ -1,40 +1,44 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"log"
 	"os"
 
+	"github.com/gmamatya/url_shortener/database"
 	"github.com/gmamatya/url_shortener/routes"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
-	"github.com/joho/godotenv"
 )
 
-func setupRoutes(app *fiber.App) {
-	// Initialize routes here
-	// This function will set up the HTTP routes for the URL shortening service.
-	// It will include handlers for shortening URLs, retrieving shortened URLs,
-	// and any other necessary endpoints.
-	app.Get("/:url", routes.ResolveURL)    // Handler for resolving shortened URLs
-	app.Post("/api/v1", routes.ShortenURL) // Handler for shortening URLs
+func setupRoutes(app *fiber.App, h *routes.Handler) {
+	app.Get("/:url", h.ResolveURL)    // resolve redirect
+	app.Post("/api/v1", h.ShortenURL) // create short URL
 }
 
 func main() {
-	err := godotenv.Load() // Load environment variables from .env file
+	ctx := context.Background()
+	// --- Create Redis clients once at startup ---
+	// db 0: for URL → shortened key storage
+	rdb0 := database.CreateClient(ctx, 0)
+	// db 1: for lookup / rate-limiting, etc.
+	rdb1 := database.CreateClient(ctx, 1)
 
-	if err != nil {
-		fmt.Println(err)
-	}
-
+	// Fiber setup
 	app := fiber.New()
+	app.Use(logger.New())
 
-	app.Use(logger.New()) // Middleware for logging requests
+	// inject into handlers
+	h := routes.NewHandler(rdb0, rdb1)
 
-	// Set up routes
-	setupRoutes(app)
+	// register routes
+	setupRoutes(app, h)
 
-	// Start the server
-	log.Fatal(app.Listen(os.Getenv("APP_PORT")))
+	// start
+	port := os.Getenv("APP_PORT")
+	if port == "" {
+		port = "3000"
+	}
+	log.Fatal(app.Listen(port))
 }
