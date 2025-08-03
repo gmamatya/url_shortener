@@ -1,11 +1,11 @@
 package routes
 
 import (
+	"context"
 	"os"
 	"strconv"
 	"time"
 
-	"github.com/gmamatya/url_shortener/database"
 	"github.com/gmamatya/url_shortener/helpers"
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
@@ -29,28 +29,39 @@ type response struct {
 	XRateLimitReset time.Duration `json:"rate_limit_reset"` // Time until the rate limit resets
 }
 
-func ShortenURL(c *fiber.Ctx) error {
+func (h *Handler) ShortenURL(c *fiber.Ctx) error {
 	body := new(request)
 	if err := c.BodyParser(body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Invalid request body",
 		})
 	}
+	ctx := context.Background()
 
 	// implement rate limiting logic here
-	rdb2 := database.CreateClient(1) // Create a Redis client for rate limiting
-	defer rdb2.Close()
-	val, err := rdb2.Get(database.Ctx, c.IP()).Result()
+	rdb2 := h.Rdb1 // Use the second Redis client for rate limiting
+	val, err := rdb2.Get(ctx, c.IP()).Result()
 	if err == redis.Nil {
 		// Key does not exist, set it with an expiry
-		_ = rdb2.Set(database.Ctx, c.IP(), os.Getenv("API_QUOTA"), 30*60*time.Second).Err()
+		quota := os.Getenv("API_QUOTA")
+		if quota == "" {
+			quota = "10"
+		}
+		if err := rdb2.Set(ctx, c.IP(), quota, 30*60*time.Second).Err(); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to set rate limit"})
+		}
+	} else if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get rate limit"})
 	} else {
 		valInt, _ := strconv.Atoi(val)
 		if valInt <= 0 {
-			limit, _ := rdb2.TTL(database.Ctx, c.IP()).Result()
+			limit, err := rdb2.TTL(ctx, c.IP()).Result()
+			if err != nil {
+				return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get rate limit expiration"})
+			}
 			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
 				"error":            "Rate limit exceeded",
-				"rate_limit_reset": limit / time.Nanosecond / time.Second, // Convert to seconds
+				"rate_limit_reset": limit.Seconds(),
 			})
 		}
 	}
@@ -63,7 +74,7 @@ func ShortenURL(c *fiber.Ctx) error {
 	}
 
 	// check for domain validity
-	if !helpers.RemoveDomainError(body.URL) {
+	if !helpers.IsServiceDomain(body.URL) {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 			"error": "Invalid domain",
 		})
@@ -73,50 +84,54 @@ func ShortenURL(c *fiber.Ctx) error {
 	body.URL = helpers.EnforceHTTP(body.URL)
 
 	var id string
-
 	if body.CustomShort == "" {
 		id = uuid.New().String()[:6] // Generate a new unique ID
 	} else {
 		id = body.CustomShort
 	}
 
-	r := database.CreateClient(0) // Create a Redis client for the default database
-	defer r.Close()
-
-	val, _ = r.Get(database.Ctx, id).Result()
-	if val != "" {
+	val, err = h.Rdb0.Get(ctx, id).Result()
+	if err != redis.Nil {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
 			"error": "Custom short URL already exists",
 		})
 	}
 
 	if body.Expiry == 0 {
-		body.Expiry = 24 * time.Hour // Default expiry time
+		expiry, err := strconv.Atoi(os.Getenv("DEFAULT_EXPIRY"))
+		if err != nil {
+			expiry = 24
+		}
+		body.Expiry = time.Duration(expiry) * time.Hour
 	}
 
-	err = r.Set(database.Ctx, id, body.URL, body.Expiry*3600*time.Second).Err()
-
-	if err != nil {
+	if err := h.Rdb0.Set(ctx, id, body.URL, body.Expiry).Err(); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to store URL",
 		})
 	}
 
 	resp := response{
-		URL:             body.URL,
-		CustomShort:     "",
-		Expiry:          body.Expiry,
-		XRateRemaining:  10,
-		XRateLimitReset: 30,
+		URL:         body.URL,
+		CustomShort: "",
+		Expiry:      body.Expiry,
 	}
 
-	rdb2.Decr(database.Ctx, c.IP()) // Decrement the rate limit counter
+	if err := rdb2.Decr(ctx, c.IP()).Err(); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to update rate limit"})
+	}
 
-	val, _ = rdb2.Get(database.Ctx, c.IP()).Result()
+	val, err = rdb2.Get(ctx, c.IP()).Result()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get rate limit"})
+	}
 	resp.XRateRemaining, _ = strconv.Atoi(val)
 
-	ttl, _ := rdb2.TTL(database.Ctx, c.IP()).Result()
-	resp.XRateLimitReset = ttl / time.Nanosecond / time.Minute // Convert to seconds
+	ttl, err := rdb2.TTL(ctx, c.IP()).Result()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get rate limit expiration"})
+	}
+	resp.XRateLimitReset = time.Duration(ttl.Minutes()) * time.Minute
 
 	resp.CustomShort = os.Getenv("DOMAIN") + "/" + id
 

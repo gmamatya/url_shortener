@@ -13,7 +13,7 @@ func EnforceHTTP(url string) string {
 	return url
 }
 
-func RemoveDomainError(url string) bool {
+func IsServiceDomain(url string) bool {
 	// Check if the URL's domain is valid
 	if url == os.Getenv("DOMAIN") {
 		return false // Invalid domain
