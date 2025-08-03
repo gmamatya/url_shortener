@@ -38,7 +38,7 @@ func main() {
 	// start
 	port := os.Getenv("APP_PORT")
 	if port == "" {
-		port = "3000"
+		log.Fatal("APP_PORT environment variable not set")
 	}
 	log.Fatal(app.Listen(port))
 }

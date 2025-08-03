@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"context"
 	"os"
 	"strconv"
 	"time"
@@ -36,16 +35,16 @@ func (h *Handler) ShortenURL(c *fiber.Ctx) error {
 			"error": "Invalid request body",
 		})
 	}
-	ctx := context.Background()
+	ctx := c.Context()
 
 	// implement rate limiting logic here
 	rdb2 := h.Rdb1 // Use the second Redis client for rate limiting
 	val, err := rdb2.Get(ctx, c.IP()).Result()
 	if err == redis.Nil {
 		// Key does not exist, set it with an expiry
-		quota := os.Getenv("API_QUOTA")
-		if quota == "" {
-			quota = "10"
+		quota, err := strconv.ParseInt(os.Getenv("API_QUOTA"), 10, 64)
+		if err != nil {
+			quota = 10
 		}
 		if err := rdb2.Set(ctx, c.IP(), quota, 30*60*time.Second).Err(); err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to set rate limit"})
@@ -53,7 +52,10 @@ func (h *Handler) ShortenURL(c *fiber.Ctx) error {
 	} else if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to get rate limit"})
 	} else {
-		valInt, _ := strconv.Atoi(val)
+		valInt, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Failed to parse rate limit"})
+		}
 		if valInt <= 0 {
 			limit, err := rdb2.TTL(ctx, c.IP()).Result()
 			if err != nil {
@@ -98,7 +100,7 @@ func (h *Handler) ShortenURL(c *fiber.Ctx) error {
 	}
 
 	if body.Expiry == 0 {
-		expiry, err := strconv.Atoi(os.Getenv("DEFAULT_EXPIRY"))
+		expiry, err := strconv.ParseInt(os.Getenv("DEFAULT_EXPIRY"), 10, 64)
 		if err != nil {
 			expiry = 24
 		}
