@@ -5,7 +5,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/gmamatya/url_shortener/api/routes"
+	"github.com/gmamatya/url_shortener/routes"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"

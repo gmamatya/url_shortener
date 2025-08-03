@@ -22,4 +22,10 @@
 go.work
 
 # Data directory
-data/
+.data/
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
